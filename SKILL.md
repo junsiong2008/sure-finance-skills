@@ -53,23 +53,41 @@ Call the `run_js` tool with:
 
 **Step 3a — fetch context first**
 
-Always call `get_context` before recording. This returns the user's real account IDs and category IDs.
+Before recording you need real account UUIDs and category UUIDs from the API. Choose **one** of these approaches based on what you already know:
+
+| Situation | Action to call |
+|-----------|---------------|
+| First transaction in the conversation (nothing cached) | `get_context` — fetches accounts **and** all categories in one shot |
+| Need to confirm or pick an account only | `get_accounts` |
+| Need to confirm or pick a category only | `get_categories` (add `"classification": "expense"` or `"income"` to narrow results) |
 
 ```json
 { "action": "get_context" }
 ```
+```json
+{ "action": "get_accounts" }
+```
+```json
+{ "action": "get_categories", "classification": "expense" }
+```
 
-The response contains:
+**`get_context` response:**
 - `accounts`: list of `{ id, name, type, currency }`
 - `expense_categories`: list of `{ id, name, parent }`
 - `income_categories`: list of `{ id, name, parent }`
 
-Cache this result for the conversation. Only call `get_context` again if the user mentions adding a new account. Do not call it before every transaction.
+**`get_accounts` response:**
+- `accounts`: list of `{ id, name, type, currency, balance }`
+
+**`get_categories` response:**
+- `categories`: list of `{ id, name, classification, parent }`
+
+Cache these results for the conversation. Only re-fetch if the user explicitly mentions a different account or a category that wasn't in the cached list.
 
 **Step 3b — pick account and category, then record**
 
 From the context response:
-- Choose the most appropriate **account** based on the transaction (e.g. "Cash" for cash payments, "Visa" for card payments, or the first account if unclear).
+- Choose the most appropriate **account** by matching the user's words to an account name (e.g. "TnG" → Touch 'n Go, "Maybank" → Maybank Current). If the user specifies an account name, find the closest match; otherwise default to the first account.
 - Choose the most appropriate **category** from `expense_categories` or `income_categories` based on the transaction name and nature. Use your semantic understanding — "Netflix" → "Subscriptions", "Grab" → "Transportation", "Salary" → "Employment Income".
 - If no category is a reasonable match, omit `category_id`.
 

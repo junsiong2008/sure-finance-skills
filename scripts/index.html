@@ -57,6 +57,54 @@
       return allItems;
     }
 
+    // ─── Action: get_accounts ─────────────────────────────────────────────────
+    // Returns all accounts so the LLM can resolve account names to UUIDs.
+    async function getAccounts(baseUrl, apiKey) {
+      const accounts = await fetchAllPages(baseUrl, apiKey, "/api/v1/accounts");
+      const mapped = accounts.map((a) => ({
+        id: a.id,
+        name: a.name,
+        type: a.account_type,
+        currency: a.currency,
+        balance: a.balance,
+      }));
+      return {
+        result: `Found ${accounts.length} account(s). Use the id field when calling record. accounts=${JSON.stringify(mapped)}`,
+      };
+    }
+
+    // ─── Action: get_categories ───────────────────────────────────────────────
+    // Returns categories (optionally filtered by classification) so the LLM can
+    // resolve category names to UUIDs. Pass classification "income" or "expense"
+    // to narrow the results; omit it to get both.
+    async function getCategories(baseUrl, apiKey, input) {
+      const classification = (input.classification || "").toLowerCase();
+      let categories;
+
+      if (classification === "income" || classification === "expense") {
+        categories = await fetchAllPages(baseUrl, apiKey, "/api/v1/categories", {
+          classification,
+        });
+      } else {
+        // Fetch both in parallel when no filter is given
+        const [expense, income] = await Promise.all([
+          fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "expense" }),
+          fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "income" }),
+        ]);
+        categories = [...expense, ...income];
+      }
+
+      const mapped = categories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        classification: c.classification,
+        parent: c.parent?.name || null,
+      }));
+      return {
+        result: `Found ${categories.length} categorie(s). Use the id field when calling record. categories=${JSON.stringify(mapped)}`,
+      };
+    }
+
     // ─── Action: get_context ──────────────────────────────────────────────────
     // Returns accounts + income/expense categories so the LLM can pick the right IDs.
     async function getContext(baseUrl, apiKey) {
@@ -66,24 +114,24 @@
         fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "income" }),
       ]);
 
+      const mappedAccounts = accounts.map((a) => ({
+        id: a.id,
+        name: a.name,
+        type: a.account_type,
+        currency: a.currency,
+      }));
+      const mappedExpense = expenseCategories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        parent: c.parent?.name || null,
+      }));
+      const mappedIncome = incomeCategories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        parent: c.parent?.name || null,
+      }));
       return {
-        result: "Context loaded. Use account_id and category_id when calling record.",
-        accounts: accounts.map((a) => ({
-          id: a.id,
-          name: a.name,
-          type: a.account_type,
-          currency: a.currency,
-        })),
-        expense_categories: expenseCategories.map((c) => ({
-          id: c.id,
-          name: c.name,
-          parent: c.parent?.name || null,
-        })),
-        income_categories: incomeCategories.map((c) => ({
-          id: c.id,
-          name: c.name,
-          parent: c.parent?.name || null,
-        })),
+        result: `Context loaded. Use account_id and category_id when calling record. accounts=${JSON.stringify(mappedAccounts)} expense_categories=${JSON.stringify(mappedExpense)} income_categories=${JSON.stringify(mappedIncome)}`,
       };
     }
 
@@ -117,19 +165,19 @@
         body: JSON.stringify(body),
       });
 
+      const txSummary = {
+        id: tx.id,
+        date: tx.date,
+        name: tx.name,
+        amount: tx.amount,
+        currency: tx.currency,
+        classification: tx.classification,
+        account: tx.account?.name,
+        category: tx.category?.name || null,
+        notes: tx.notes || null,
+      };
       return {
-        result: "Transaction recorded successfully.",
-        transaction: {
-          id: tx.id,
-          date: tx.date,
-          name: tx.name,
-          amount: tx.amount,
-          currency: tx.currency,
-          classification: tx.classification,
-          account: tx.account?.name,
-          category: tx.category?.name || null,
-          notes: tx.notes || null,
-        },
+        result: `Transaction recorded successfully. transaction=${JSON.stringify(txSummary)}`,
       };
     }
 
@@ -166,10 +214,11 @@
         ? "No transactions found."
         : `Found ${transactions.length} transaction(s):\n\n${lines.join("\n")}`;
 
+      const paginationInfo = data.pagination
+        ? ` pagination=${JSON.stringify(data.pagination)}`
+        : "";
       return {
-        result: summary,
-        transactions,
-        pagination: data.pagination,
+        result: `${summary} transactions=${JSON.stringify(transactions)}${paginationInfo}`,
       };
     }
 
@@ -199,16 +248,16 @@
         }
 
         if (matches.length > 1) {
+          const candidates = matches.map((tx) => ({
+            id: tx.id,
+            date: tx.date,
+            name: tx.name,
+            amount: tx.amount,
+            currency: tx.currency,
+            classification: tx.classification,
+          }));
           return {
-            result: "Multiple transactions matched — please confirm which one to delete by providing its ID.",
-            candidates: matches.map((tx) => ({
-              id: tx.id,
-              date: tx.date,
-              name: tx.name,
-              amount: tx.amount,
-              currency: tx.currency,
-              classification: tx.classification,
-            })),
+            result: `Multiple transactions matched — please confirm which one to delete by providing its ID. candidates=${JSON.stringify(candidates)}`,
           };
         }
 
@@ -226,16 +275,16 @@
         method: "DELETE",
       });
 
+      const deleted = {
+        id: details.id,
+        date: details.date,
+        name: details.name,
+        amount: details.amount,
+        currency: details.currency,
+        classification: details.classification,
+      };
       return {
-        result: "Transaction deleted successfully.",
-        deleted: {
-          id: details.id,
-          date: details.date,
-          name: details.name,
-          amount: details.amount,
-          currency: details.currency,
-          classification: details.classification,
-        },
+        result: `Transaction deleted successfully. deleted=${JSON.stringify(deleted)}`,
       };
     }
 
@@ -247,7 +296,11 @@
         const action = (input.action || "").toLowerCase();
 
         let output;
-        if (action === "get_context") {
+        if (action === "get_accounts") {
+          output = await getAccounts(baseUrl, apiKey);
+        } else if (action === "get_categories") {
+          output = await getCategories(baseUrl, apiKey, input);
+        } else if (action === "get_context") {
           output = await getContext(baseUrl, apiKey);
         } else if (action === "record") {
           output = await recordTransaction(baseUrl, apiKey, input);
@@ -257,7 +310,7 @@
           output = await deleteTransaction(baseUrl, apiKey, input);
         } else {
           throw new Error(
-            `Unknown action "${action}". Valid actions: get_context, record, list, delete.`
+            `Unknown action "${action}". Valid actions: get_accounts, get_categories, get_context, record, list, delete.`
           );
         }
 
