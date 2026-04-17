@@ -156,8 +156,18 @@
         category: tx.category?.name || null,
       }));
 
+      const lines = transactions.map((tx, i) =>
+        `${i + 1}. [${tx.date}] ${tx.name} — ${tx.amount} (${tx.classification})` +
+        (tx.category ? ` | ${tx.category}` : "") +
+        ` | ${tx.account}`
+      );
+
+      const summary = transactions.length === 0
+        ? "No transactions found."
+        : `Found ${transactions.length} transaction(s):\n\n${lines.join("\n")}`;
+
       return {
-        result: `Found ${transactions.length} transaction(s).`,
+        result: summary,
         transactions,
         pagination: data.pagination,
       };
