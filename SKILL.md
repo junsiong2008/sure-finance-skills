@@ -1,17 +1,10 @@
 ---
-name: financial-recorder
+name: sure-finance-skills
 description: Record, view, and delete financial transactions in Sure Finance. Use this skill when the user mentions spending money, receiving income, logging expenses, checking recent transactions, removing a transaction, or uploads a receipt or invoice image.
-homepage: https://github.com/we-promise/sure
-require-secret: true
-require-secret-description: |
-  Enter your Sure Finance credentials in this format:
-    BASE_URL|API_KEY
-
-  Example:
-    http://192.168.1.100:3000|your-api-key-here
-
-  - BASE_URL: the address of your self-hosted Sure Finance instance (no trailing slash)
-  - API_KEY: generate one from your Sure Finance account settings under API Keys
+metadata:
+  homepage: https://github.com/we-promise/sure
+  require-secret: true
+  require-secret-description: "Enter credentials as BASE_URL|API_KEY, e.g. http://192.168.1.100:3000|your-api-key"
 ---
 
 # Sure Finance — Financial Recorder
