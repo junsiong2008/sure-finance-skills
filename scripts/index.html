@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head></head>
+<body>
+  <script>
+    // Parse the secret: "BASE_URL|API_KEY"
+    function parseSecret(secret) {
+      const parts = (secret || "").split("|");
+      if (parts.length < 2) {
+        throw new Error(
+          'Invalid secret format. Expected: BASE_URL|API_KEY  ' +
+          'Example: http://192.168.1.100:3000|your-api-key'
+        );
+      }
+      return {
+        baseUrl: parts[0].replace(/\/$/, ""),
+        apiKey: parts[1],
+      };
+    }
+
+    // Generic authenticated fetch helper
+    async function apiFetch(baseUrl, apiKey, path, options = {}) {
+      const url = baseUrl + path;
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": apiKey,
+          ...(options.headers || {}),
+        },
+      });
+      if (!res.ok) {
+        let errBody = {};
+        try { errBody = await res.json(); } catch (_) {}
+        throw new Error(
+          errBody.message || errBody.error || `HTTP ${res.status} from ${path}`
+        );
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    // Fetch all pages of a resource up to a reasonable limit
+    async function fetchAllPages(baseUrl, apiKey, path, params = {}, maxPages = 4) {
+      let page = 1;
+      const allItems = [];
+      const resourceKey = path.split("/").filter(Boolean).pop();
+
+      while (page <= maxPages) {
+        const qs = new URLSearchParams({ ...params, page, per_page: 100 }).toString();
+        const data = await apiFetch(baseUrl, apiKey, `${path}?${qs}`);
+        const items = data[resourceKey] || data;
+        allItems.push(...items);
+        if (!data.pagination || page >= data.pagination.total_pages) break;
+        page++;
+      }
+      return allItems;
+    }
+
+    // ─── Action: get_context ──────────────────────────────────────────────────
+    // Returns accounts + income/expense categories so the LLM can pick the right IDs.
+    async function getContext(baseUrl, apiKey) {
+      const [accounts, expenseCategories, incomeCategories] = await Promise.all([
+        fetchAllPages(baseUrl, apiKey, "/api/v1/accounts"),
+        fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "expense" }),
+        fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "income" }),
+      ]);
+
+      return {
+        result: "Context loaded. Use account_id and category_id when calling record.",
+        accounts: accounts.map((a) => ({
+          id: a.id,
+          name: a.name,
+          type: a.account_type,
+          currency: a.currency,
+        })),
+        expense_categories: expenseCategories.map((c) => ({
+          id: c.id,
+          name: c.name,
+          parent: c.parent?.name || null,
+        })),
+        income_categories: incomeCategories.map((c) => ({
+          id: c.id,
+          name: c.name,
+          parent: c.parent?.name || null,
+        })),
+      };
+    }
+
+    // ─── Action: record a transaction ────────────────────────────────────────
+    async function recordTransaction(baseUrl, apiKey, input) {
+      const { name, amount, nature, date, notes, account_id, category_id } = input;
+
+      if (!name)       throw new Error("Missing required field: name");
+      if (!amount)     throw new Error("Missing required field: amount");
+      if (!nature)     throw new Error("Missing required field: nature");
+      if (!date)       throw new Error("Missing required field: date");
+      if (!account_id) throw new Error("Missing required field: account_id. Call get_context first to retrieve available accounts.");
+
+      const natureMap = { inflow: "income", outflow: "expense" };
+      const normalisedNature = natureMap[nature] ?? nature;
+
+      const body = {
+        transaction: {
+          account_id,
+          date,
+          amount: Math.abs(parseFloat(amount)),
+          name,
+          nature: normalisedNature,
+          ...(notes      ? { notes }       : {}),
+          ...(category_id ? { category_id } : {}),
+        },
+      };
+
+      const tx = await apiFetch(baseUrl, apiKey, "/api/v1/transactions", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+
+      return {
+        result: "Transaction recorded successfully.",
+        transaction: {
+          id: tx.id,
+          date: tx.date,
+          name: tx.name,
+          amount: tx.amount,
+          currency: tx.currency,
+          classification: tx.classification,
+          account: tx.account?.name,
+          category: tx.category?.name || null,
+          notes: tx.notes || null,
+        },
+      };
+    }
+
+    // ─── Action: list transactions ────────────────────────────────────────────
+    async function listTransactions(baseUrl, apiKey, input) {
+      const params = {};
+      if (input.per_page)   params.per_page   = input.per_page;
+      if (input.type)       params.type       = input.type;
+      if (input.start_date) params.start_date = input.start_date;
+      if (input.end_date)   params.end_date   = input.end_date;
+      if (input.search)     params.search     = input.search;
+
+      const qs = new URLSearchParams({ per_page: 10, ...params }).toString();
+      const data = await apiFetch(baseUrl, apiKey, `/api/v1/transactions?${qs}`);
+
+      const transactions = (data.transactions || []).map((tx) => ({
+        id: tx.id,
+        date: tx.date,
+        name: tx.name,
+        amount: tx.amount,
+        currency: tx.currency,
+        classification: tx.classification,
+        account: tx.account?.name,
+        category: tx.category?.name || null,
+      }));
+
+      return {
+        result: `Found ${transactions.length} transaction(s).`,
+        transactions,
+        pagination: data.pagination,
+      };
+    }
+
+    // ─── Action: delete a transaction ─────────────────────────────────────────
+    async function deleteTransaction(baseUrl, apiKey, input) {
+      let txId = input.id || null;
+
+      // If no ID provided, search for the transaction first
+      if (!txId) {
+        if (!input.search && !input.date) {
+          throw new Error(
+            "To delete a transaction, provide either its 'id', or a 'search' keyword / 'date'."
+          );
+        }
+
+        const params = {};
+        if (input.search) params.search = input.search;
+        if (input.date)   { params.start_date = input.date; params.end_date = input.date; }
+        params.per_page = 10;
+
+        const qs = new URLSearchParams(params).toString();
+        const data = await apiFetch(baseUrl, apiKey, `/api/v1/transactions?${qs}`);
+        const matches = data.transactions || [];
+
+        if (!matches.length) {
+          return { result: "No matching transaction found. Nothing was deleted." };
+        }
+
+        if (matches.length > 1) {
+          return {
+            result: "Multiple transactions matched — please confirm which one to delete by providing its ID.",
+            candidates: matches.map((tx) => ({
+              id: tx.id,
+              date: tx.date,
+              name: tx.name,
+              amount: tx.amount,
+              currency: tx.currency,
+              classification: tx.classification,
+            })),
+          };
+        }
+
+        txId = matches[0].id;
+      }
+
+      let details = null;
+      try {
+        details = await apiFetch(baseUrl, apiKey, `/api/v1/transactions/${txId}`);
+      } catch (_) {
+        throw new Error(`Transaction with ID ${txId} not found.`);
+      }
+
+      await apiFetch(baseUrl, apiKey, `/api/v1/transactions/${txId}`, {
+        method: "DELETE",
+      });
+
+      return {
+        result: "Transaction deleted successfully.",
+        deleted: {
+          id: details.id,
+          date: details.date,
+          name: details.name,
+          amount: details.amount,
+          currency: details.currency,
+          classification: details.classification,
+        },
+      };
+    }
+
+    // ─── Main entry point ─────────────────────────────────────────────────────
+    window["ai_edge_gallery_get_result"] = async (data, secret) => {
+      try {
+        const input = JSON.parse(data);
+        const { baseUrl, apiKey } = parseSecret(secret);
+        const action = (input.action || "").toLowerCase();
+
+        let output;
+        if (action === "get_context") {
+          output = await getContext(baseUrl, apiKey);
+        } else if (action === "record") {
+          output = await recordTransaction(baseUrl, apiKey, input);
+        } else if (action === "list") {
+          output = await listTransactions(baseUrl, apiKey, input);
+        } else if (action === "delete") {
+          output = await deleteTransaction(baseUrl, apiKey, input);
+        } else {
+          throw new Error(
+            `Unknown action "${action}". Valid actions: get_context, record, list, delete.`
+          );
+        }
+
+        return JSON.stringify(output);
+      } catch (e) {
+        return JSON.stringify({ error: e.message });
+      }
+    };
+  </script>
+</body>
+</html>
