@@ -51,36 +51,18 @@ Call the `run_js` tool with:
 
 #### For "record" — use a two-step flow
 
-**Step 3a — fetch context first**
+**Step 3a — ALWAYS fetch context before recording**
 
-Before recording you need real account UUIDs and category UUIDs from the API. Choose **one** of these approaches based on what you already know:
-
-| Situation | Action to call |
-|-----------|---------------|
-| First transaction in the conversation (nothing cached) | `get_context` — fetches accounts **and** all categories in one shot |
-| Need to confirm or pick an account only | `get_accounts` |
-| Need to confirm or pick a category only | `get_categories` (add `"classification": "expense"` or `"income"` to narrow results) |
+> **MANDATORY**: You MUST call `get_context` before every `record` action. Never skip this step. You need real account UUIDs and category UUIDs from the API — you cannot guess or invent them. If `get_context` has already been called earlier in this conversation, you may reuse the cached result and skip the call. If there is any doubt, call it again.
 
 ```json
 { "action": "get_context" }
-```
-```json
-{ "action": "get_accounts" }
-```
-```json
-{ "action": "get_categories", "classification": "expense" }
 ```
 
 **`get_context` response:**
 - `accounts`: list of `{ id, name, type, currency }`
 - `expense_categories`: list of `{ id, name, parent }`
 - `income_categories`: list of `{ id, name, parent }`
-
-**`get_accounts` response:**
-- `accounts`: list of `{ id, name, type, currency, balance }`
-
-**`get_categories` response:**
-- `categories`: list of `{ id, name, classification, parent }`
 
 Cache these results for the conversation. Only re-fetch if the user explicitly mentions a different account or a category that wasn't in the cached list.
 

@@ -57,54 +57,6 @@
       return allItems;
     }
 
-    // ─── Action: get_accounts ─────────────────────────────────────────────────
-    // Returns all accounts so the LLM can resolve account names to UUIDs.
-    async function getAccounts(baseUrl, apiKey) {
-      const accounts = await fetchAllPages(baseUrl, apiKey, "/api/v1/accounts");
-      const mapped = accounts.map((a) => ({
-        id: a.id,
-        name: a.name,
-        type: a.account_type,
-        currency: a.currency,
-        balance: a.balance,
-      }));
-      return {
-        result: `Found ${accounts.length} account(s). Use the id field when calling record. accounts=${JSON.stringify(mapped)}`,
-      };
-    }
-
-    // ─── Action: get_categories ───────────────────────────────────────────────
-    // Returns categories (optionally filtered by classification) so the LLM can
-    // resolve category names to UUIDs. Pass classification "income" or "expense"
-    // to narrow the results; omit it to get both.
-    async function getCategories(baseUrl, apiKey, input) {
-      const classification = (input.classification || "").toLowerCase();
-      let categories;
-
-      if (classification === "income" || classification === "expense") {
-        categories = await fetchAllPages(baseUrl, apiKey, "/api/v1/categories", {
-          classification,
-        });
-      } else {
-        // Fetch both in parallel when no filter is given
-        const [expense, income] = await Promise.all([
-          fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "expense" }),
-          fetchAllPages(baseUrl, apiKey, "/api/v1/categories", { classification: "income" }),
-        ]);
-        categories = [...expense, ...income];
-      }
-
-      const mapped = categories.map((c) => ({
-        id: c.id,
-        name: c.name,
-        classification: c.classification,
-        parent: c.parent?.name || null,
-      }));
-      return {
-        result: `Found ${categories.length} categorie(s). Use the id field when calling record. categories=${JSON.stringify(mapped)}`,
-      };
-    }
-
     // ─── Action: get_context ──────────────────────────────────────────────────
     // Returns accounts + income/expense categories so the LLM can pick the right IDs.
     async function getContext(baseUrl, apiKey) {
@@ -225,6 +177,7 @@
     // ─── Action: delete a transaction ─────────────────────────────────────────
     async function deleteTransaction(baseUrl, apiKey, input) {
       let txId = input.id || null;
+      let txDetails = null;
 
       // If no ID provided, search for the transaction first
       if (!txId) {
@@ -262,13 +215,17 @@
         }
 
         txId = matches[0].id;
+        txDetails = matches[0]; // reuse details already fetched — avoids a second GET
       }
 
-      let details = null;
-      try {
-        details = await apiFetch(baseUrl, apiKey, `/api/v1/transactions/${txId}`);
-      } catch (_) {
-        throw new Error(`Transaction with ID ${txId} not found.`);
+      // If we only have an ID (no details yet), try to fetch them; don't block the delete if it fails
+      if (!txDetails) {
+        try {
+          const raw = await apiFetch(baseUrl, apiKey, `/api/v1/transactions/${txId}`);
+          txDetails = raw.transaction || raw; // handle both wrapped and unwrapped responses
+        } catch (_) {
+          txDetails = { id: txId }; // proceed with just the ID
+        }
       }
 
       await apiFetch(baseUrl, apiKey, `/api/v1/transactions/${txId}`, {
@@ -276,12 +233,12 @@
       });
 
       const deleted = {
-        id: details.id,
-        date: details.date,
-        name: details.name,
-        amount: details.amount,
-        currency: details.currency,
-        classification: details.classification,
+        id: txDetails.id,
+        date: txDetails.date,
+        name: txDetails.name,
+        amount: txDetails.amount,
+        currency: txDetails.currency,
+        classification: txDetails.classification,
       };
       return {
         result: `Transaction deleted successfully. deleted=${JSON.stringify(deleted)}`,
@@ -296,11 +253,7 @@
         const action = (input.action || "").toLowerCase();
 
         let output;
-        if (action === "get_accounts") {
-          output = await getAccounts(baseUrl, apiKey);
-        } else if (action === "get_categories") {
-          output = await getCategories(baseUrl, apiKey, input);
-        } else if (action === "get_context") {
+        if (action === "get_context") {
           output = await getContext(baseUrl, apiKey);
         } else if (action === "record") {
           output = await recordTransaction(baseUrl, apiKey, input);
@@ -310,7 +263,7 @@
           output = await deleteTransaction(baseUrl, apiKey, input);
         } else {
           throw new Error(
-            `Unknown action "${action}". Valid actions: get_accounts, get_categories, get_context, record, list, delete.`
+            `Unknown action "${action}". Valid actions: get_context, record, list, delete.`
           );
         }
 
